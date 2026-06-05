@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import type { RegisterRequest } from "@cp-share/shared";
+import { spawn } from "child_process";
 import { SidebarProvider } from "./SidebarProvider";
 import { CommunityCodeProvider } from "./CommunityCodeProvider";
 
@@ -185,6 +186,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     )
   );
 
+  // ── 7b. Command: Test Code Locally in Background ──────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "cp-share.testCode",
+      async (payload: {
+        code: string;
+        language: string;
+        expected_input: string | null;
+        expected_output: string | null;
+        problem_type: "leetcode" | "atcoder-cf" | "other";
+      }) => {
+        return await testCodeLocally(payload);
+      }
+    )
+  );
+
   // ── 8. Command: Open Code as Virtual Document ─────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -288,4 +305,226 @@ function languageToExtension(language: string): string {
     rust: ".rs", go: ".go", java: ".java", ruby: ".rb",
   };
   return map[language.toLowerCase()] ?? ".txt";
+}
+
+async function testCodeLocally(payload: {
+  code: string;
+  language: string;
+  expected_input: string | null;
+  expected_output: string | null;
+  problem_type: "leetcode" | "atcoder-cf" | "other";
+}): Promise<{ passed: boolean; actual_output?: string; error?: string; compile_error?: string }> {
+  const { code, language, expected_input, expected_output, problem_type } = payload;
+  const lang = language.toLowerCase();
+  const ext = languageToExtension(language);
+  const tmpDir = os.tmpdir();
+  const baseName = `cp-share-test-${Date.now()}`;
+  const srcFile = path.join(tmpDir, `${baseName}${ext}`);
+
+  // 1. Write the code to temp file
+  let finalCode = code;
+  if (problem_type === "leetcode" && (lang === "python" || lang === "python3" || lang === "py")) {
+    // Append the Python LeetCode Solution wrapper
+    finalCode = code + `
+
+# ── Dynamic LeetCode test runner wrapper ─────────────────────
+import sys
+import json
+
+if __name__ == '__main__':
+    try:
+        if 'Solution' not in globals():
+            print("Error: class Solution not found in your code.", file=sys.stderr)
+            sys.exit(1)
+        sol = Solution()
+        methods = [m for m in dir(sol) if not m.startswith('_') and callable(getattr(sol, m))]
+        if not methods:
+            print("Error: no public method found in class Solution.", file=sys.stderr)
+            sys.exit(1)
+        method_name = methods[0]
+        method = getattr(sol, method_name)
+        
+        inputs = []
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                inputs.append(json.loads(line))
+            except json.JSONDecodeError:
+                inputs.append(line)
+        
+        res = method(*inputs)
+        print(json.dumps(res))
+    except Exception as e:
+        print(f"Runtime Error: {e}", file=sys.stderr)
+        sys.exit(1)
+`;
+  } else if (problem_type === "leetcode" && (lang === "cpp" || lang === "c++" || lang === "c")) {
+    // Check for main function in C++ LeetCode
+    if (!code.includes("main(") && !code.includes("main (")) {
+      return {
+        passed: false,
+        compile_error: "LeetCode C++ Solutions require a main() function for local testing. Please write a main() that reads inputs and prints the result, or use standard I/O (Codeforces/AtCoder style).",
+      };
+    }
+  }
+
+  fs.writeFileSync(srcFile, finalCode, "utf8");
+
+  // 2. Set up compilation and run parameters
+  let runCmd = "";
+  let runArgs: string[] = [];
+  let isCompiled = false;
+  let compileCmd = "";
+  let compileArgs: string[] = [];
+  const outFile = path.join(tmpDir, process.platform === "win32" ? `${baseName}.exe` : baseName);
+
+  if (lang === "python" || lang === "python3" || lang === "py") {
+    runCmd = process.platform === "win32" ? "python" : "python3";
+    runArgs = [srcFile];
+  } else if (lang === "cpp" || lang === "c++" || lang === "c") {
+    isCompiled = true;
+    compileCmd = "g++";
+    compileArgs = [srcFile, "-o", outFile, "-std=c++17"];
+    runCmd = outFile;
+    runArgs = [];
+  } else if (lang === "javascript" || lang === "js") {
+    runCmd = "node";
+    runArgs = [srcFile];
+  } else if (lang === "typescript" || lang === "ts") {
+    runCmd = "ts-node";
+    runArgs = [srcFile];
+  } else {
+    return { passed: false, error: `Testing not supported for language: ${language}` };
+  }
+
+  // 3. Compile if necessary
+  if (isCompiled) {
+    try {
+      const compileRes = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+        const cp = spawn(compileCmd, compileArgs);
+        let stderr = "";
+        cp.stderr.on("data", (d) => { stderr += d.toString(); });
+        cp.on("close", (c) => resolve({ code: c, stderr }));
+      });
+
+      if (compileRes.code !== 0) {
+        try { fs.unlinkSync(srcFile); } catch {}
+        return { passed: false, compile_error: compileRes.stderr || "Compilation failed." };
+      }
+    } catch (err) {
+      return { passed: false, compile_error: `Compile error: ${String(err)}` };
+    }
+  }
+
+  // 4. Execute with input
+  try {
+    const inputData = expected_input ?? "";
+    const execRes = await new Promise<{ stdout: string; stderr: string; code: number | null; error?: string }>((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let killed = false;
+
+      const cp = spawn(runCmd, runArgs);
+
+      const timer = setTimeout(() => {
+        cp.kill();
+        killed = true;
+        resolve({ stdout, stderr, code: null, error: "Time Limit Exceeded (5s timeout)" });
+      }, 5000);
+
+      cp.stdout.on("data", (d) => { stdout += d.toString(); });
+      cp.stderr.on("data", (d) => { stderr += d.toString(); });
+
+      cp.on("close", (c) => {
+        clearTimeout(timer);
+        if (!killed) resolve({ stdout, stderr, code: c });
+      });
+
+      if (inputData) {
+        cp.stdin.write(inputData);
+      }
+      cp.stdin.end();
+    });
+
+    // Clean up temp files
+    try { fs.unlinkSync(srcFile); } catch {}
+    if (isCompiled) { try { fs.unlinkSync(outFile); } catch {} }
+
+    if (execRes.error) {
+      return { passed: false, error: execRes.error };
+    }
+
+    if (execRes.code !== 0) {
+      return { passed: false, error: execRes.stderr || `Runtime Error: Exit code ${execRes.code}` };
+    }
+
+    // 5. Compare outputs
+    const actualClean = cleanOutput(execRes.stdout);
+    const expectedClean = cleanOutput(expected_output ?? "");
+
+    let passed = false;
+    if (actualClean === expectedClean) {
+      passed = true;
+    } else {
+      try {
+        const actualJson = JSON.parse(actualClean);
+        const expectedJson = JSON.parse(expectedClean);
+        if (jsonEquals(actualJson, expectedJson)) {
+          passed = true;
+        }
+      } catch {
+        // Fallback to string mismatch
+      }
+    }
+
+    if (passed) {
+      return { passed: true, actual_output: execRes.stdout };
+    } else {
+      return {
+        passed: false,
+        actual_output: execRes.stdout,
+        error: `Output mismatch.`,
+      };
+    }
+  } catch (err) {
+    try { fs.unlinkSync(srcFile); } catch {}
+    if (isCompiled) { try { fs.unlinkSync(outFile); } catch {} }
+    return { passed: false, error: `Execution error: ${String(err)}` };
+  }
+}
+
+function cleanOutput(str: string): string {
+  return str
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map(line => line.trimEnd())
+    .join("\n")
+    .trim();
+}
+
+function jsonEquals(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a && b && typeof a === "object") {
+    if (Array.isArray(a)) {
+      if (!Array.isArray(b) || a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (!jsonEquals(a[i], b[i])) return false;
+      }
+      return true;
+    } else {
+      if (Array.isArray(b)) return false;
+      const keysA = Object.keys(a);
+      const keysB = Object.keys(b);
+      if (keysA.length !== keysB.length) return false;
+      for (const k of keysA) {
+        if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+        if (!jsonEquals(a[k], b[k])) return false;
+      }
+      return true;
+    }
+  }
+  return false;
 }

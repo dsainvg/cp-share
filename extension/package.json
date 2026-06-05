@@ -1,6 +1,6 @@
 {
   "name": "cp-share",
-  "version": "0.0.1",
+  "version": "1.0.2",
   "private": true,
   "displayName": "CP Share",
   "description": "Community code-sharing sidebar for VS Code",
@@ -8,8 +8,12 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [

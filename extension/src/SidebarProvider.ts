@@ -57,7 +57,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     );
 
     // Auto-load feed when view opens
-    this._fetchAndPostFeed();
+    if (this._authKey) {
+      this._fetchAndPostFeed();
+    }
   }
 
   /** Send a typed message from the extension to the webview. */
@@ -94,6 +96,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case "CREATE_COMMENT":
         await this._createComment(msg.payload);
         break;
+
+      case "DELETE_POST":
+        await this._deletePost(msg.payload.post_id);
+        break;
+
+      case "TEST_CODE": {
+        const result = await vscode.commands.executeCommand("cp-share.testCode", msg.payload);
+        this.postMessage({ type: "TEST_RESULT", payload: result as any });
+        break;
+      }
 
       case "ATTACH_FILE":
         // Delegate to the registered command so it can access the active editor
@@ -171,6 +183,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: "ERROR", payload: { message: data.error ?? "Failed to post comment" } });
         return;
       }
+      await this._fetchAndPostFeed();
+    } catch (e) {
+      this.postMessage({ type: "ERROR", payload: { message: String(e) } });
+    }
+  }
+
+  private async _deletePost(postId: number): Promise<void> {
+    try {
+      const res = await fetch(`${API_BASE}/posts/${postId}`, {
+        method: "DELETE",
+        headers: this._headers(),
+      });
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        this.postMessage({ type: "ERROR", payload: { message: data.error ?? "Failed to delete post" } });
+        return;
+      }
+      vscode.window.showInformationMessage("CP Share: Post deleted successfully.");
       await this._fetchAndPostFeed();
     } catch (e) {
       this.postMessage({ type: "ERROR", payload: { message: String(e) } });
@@ -525,6 +555,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       filter: drop-shadow(0 0 8px var(--accent));
       margin-bottom: 8px;
     }
+    .icon-btn { border: none; background: none; cursor: pointer; color: var(--muted); }
   </style>
 </head>
 <body data-auth-key-hint="${this._authKey}">
@@ -546,6 +577,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     <div class="form-row">
       <input type="text" id="post-title" placeholder="Title…" />
       <textarea id="post-body" placeholder="What are you sharing?"></textarea>
+      
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="text" id="post-link" placeholder="Problem Link (optional)…" style="flex:1;min-width:0" />
+        <select id="post-problem-type" style="width:110px">
+          <option value="other">Other</option>
+          <option value="leetcode">LeetCode</option>
+          <option value="atcoder-cf">AtCoder/CF</option>
+        </select>
+      </div>
+
+      <div style="display:flex;gap:6px">
+        <textarea id="post-expected-input" placeholder="Expected Input (optional)…" style="flex:1;min-height:35px;height:35px"></textarea>
+        <textarea id="post-expected-output" placeholder="Expected Output (optional)…" style="flex:1;min-height:35px;height:35px"></textarea>
+      </div>
+
       <div id="post-attach-strip" style="display:none" class="attach-strip">
         <span id="post-attach-label">File attached</span>
         <button id="post-attach-clear" title="Remove attachment">✕</button>
@@ -603,6 +649,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   // ── State ───────────────────────────────────────────────────
   let attachedCode = null;
   let attachedLang = null;
+  let _currentPosts = [];
+  let activeTestTarget = null;
 
   // ── Toolbar ─────────────────────────────────────────────────
   document.getElementById('btn-refresh').addEventListener('click', () => {
@@ -639,10 +687,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     const code = attachedCode ?? (postCode.value.trim() || undefined);
     const lang = attachedLang ?? (postLang.value || undefined);
+    const link = document.getElementById('post-link').value.trim() || undefined;
+    const problem_type = document.getElementById('post-problem-type').value;
+    const expected_input = document.getElementById('post-expected-input').value || undefined;
+    const expected_output = document.getElementById('post-expected-output').value || undefined;
 
-    postMsg({ type: 'CREATE_POST', payload: { title, body, code_content: code, language: lang } });
+    postMsg({ 
+      type: 'CREATE_POST', 
+      payload: { 
+        title, 
+        body, 
+        code_content: code, 
+        language: lang,
+        link,
+        problem_type,
+        expected_input,
+        expected_output
+      } 
+    });
     document.getElementById('post-title').value = '';
     document.getElementById('post-body').value = '';
+    document.getElementById('post-link').value = '';
+    document.getElementById('post-problem-type').value = 'other';
+    document.getElementById('post-expected-input').value = '';
+    document.getElementById('post-expected-output').value = '';
     postCode.value = '';
     postLang.value = '';
     postCode.style.display = 'none';
@@ -668,76 +736,106 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  function renderCode(id, code, lang, prefix) {
+  function renderCode(id, code, lang, prefix, post = null) {
     if (!code) return '';
     const idStr = prefix + '-' + id;
-    return \`
-    <div class="code-block">
-      <div class="code-block-header">
-        <span class="lang-badge">\${escape(lang || 'text')}</span>
-        <div class="code-actions">
-          <button class="code-btn" onclick="openDoc('\${idStr}', \${JSON.stringify(code)}, '\${escape(lang || '')}')">Open</button>
-          <button class="code-btn" onclick="runCode(\${JSON.stringify(code)}, '\${escape(lang || '')}')">▶ Run</button>
-        </div>
-      </div>
-      <pre>\${escape(code)}</pre>
-    </div>\`;
+    
+    let testBtn = '';
+    if (prefix === 'post' && post && (post.expected_input || post.expected_output)) {
+      testBtn = '<button class="code-btn test-btn" data-post-id="' + post.id + '">🧪 Test</button>';
+    }
+    
+    return '<div class="code-block" id="code-block-' + idStr + '">' +
+      '<div class="code-block-header">' +
+        '<span class="lang-badge">' + escape(lang || 'text') + '</span>' +
+        '<div class="code-actions">' +
+          testBtn +
+          '<button class="code-btn" onclick="openDoc(\'' + idStr + '\', ' + JSON.stringify(code) + ', \'' + escape(lang || '') + '\')">Open</button>' +
+          '<button class="code-btn" onclick="runCode(' + JSON.stringify(code) + ', \'' + escape(lang || '') + '\')">▶ Run</button>' +
+        '</div>' +
+      '</div>' +
+      '<pre>' + escape(code) + '</pre>' +
+      '<div class="test-result-panel" id="test-panel-' + idStr + '" style="display:none;padding:6px 10px;border-top:1px solid #30363d;font-size:11px"></div>' +
+    '</div>';
   }
 
   function renderPost(post) {
-    const comments = (post.comments || []).map(c => \`
-      <div class="comment">
-        <div class="comment-meta">User #\${c.user_id} · \${formatDate(c.created_at)}</div>
-        <div class="comment-body">\${escape(c.body)}</div>
-        \${renderCode(c.id, c.code_content, c.language, 'comment')}
-      </div>
-    \`).join('');
+    const comments = (post.comments || []).map(c => 
+      '<div class="comment">' +
+        '<div class="comment-meta">' + escape(c.author_username || 'User #' + c.user_id) + ' · ' + formatDate(c.created_at) + '</div>' +
+        '<div class="comment-body">' + escape(c.body) + '</div>' +
+        renderCode(c.id, c.code_content, c.language, 'comment') +
+      '</div>'
+    ).join('');
 
-    return \`
-    <div class="post-card" data-post-id="\${post.id}">
-      <div class="post-header">
-        <div class="post-meta">
-          <div class="post-title">\${escape(post.title)}</div>
-          <div class="post-info">User #\${post.user_id} · \${formatDate(post.created_at)}</div>
-        </div>
-      </div>
-      <div class="post-body">\${escape(post.body)}</div>
-      \${renderCode(post.id, post.code_content, post.language, 'post')}
-      <div class="comments-section">
-        \${comments}
-        <div class="comment-form">
-          <textarea class="comment-textarea" data-post-id="\${post.id}"
-                    placeholder="Write a comment…"></textarea>
-          <div class="attach-strip comment-attach-strip" data-post-id="\${post.id}" style="display:none">
-            <span class="comment-attach-label">File attached</span>
-            <button class="comment-attach-clear" data-post-id="\${post.id}">✕</button>
-          </div>
-          <div style="display:flex;gap:5px">
-            <select class="comment-lang" data-post-id="\${post.id}" style="flex:1">
-              <option value="">No code</option>
-              \${langOptionsHTML()}
-            </select>
-            <button class="btn btn-sm btn-ghost comment-attach-btn" data-post-id="\${post.id}">📎</button>
-            <button class="btn btn-sm comment-submit-btn" data-post-id="\${post.id}">Reply</button>
-          </div>
-          <textarea class="comment-code-area code-area" data-post-id="\${post.id}"
-                    placeholder="Code (optional)…" style="display:none"></textarea>
-        </div>
-      </div>
-    </div>\`;
+    const deleteBtn = post.is_owner 
+      ? '<button class="icon-btn delete-post-btn" data-post-id="' + post.id + '" title="Delete Post" style="color:var(--danger)">🗑️</button>'
+      : '';
+
+    const linkHtml = post.link 
+      ? '<a href="' + escape(post.link) + '" target="_blank" style="color:var(--accent-light);text-decoration:none;margin-left:6px">🔗 Link</a>'
+      : '';
+
+    return '<div class="post-card" data-post-id="' + post.id + '">' +
+      '<div class="post-header">' +
+        '<div class="post-meta">' +
+          '<div class="post-title">' + escape(post.title) + '</div>' +
+          '<div class="post-info">' + escape(post.author_username || 'User #' + post.user_id) + ' · ' + formatDate(post.created_at) + linkHtml + '</div>' +
+        '</div>' +
+        deleteBtn +
+      '</div>' +
+      '<div class="post-body">' + escape(post.body) + '</div>' +
+      renderCode(post.id, post.code_content, post.language, 'post', post) +
+      '<div class="comments-section">' +
+        comments +
+        '<div class="comment-form">' +
+          '<textarea class="comment-textarea" data-post-id="' + post.id + '" placeholder="Write a comment…"></textarea>' +
+          '<div class="attach-strip comment-attach-strip" data-post-id="' + post.id + '" style="display:none">' +
+            '<span class="comment-attach-label">File attached</span>' +
+            '<button class="comment-attach-clear" data-post-id="' + post.id + '">✕</button>' +
+          '</div>' +
+          '<div style="display:flex;gap:5px">' +
+            '<select class="comment-lang" data-post-id="' + post.id + '" style="flex:1">' +
+              '<option value="">No code</option>' +
+              langOptionsHTML() +
+            '</select>' +
+            '<button class="btn btn-sm btn-ghost comment-attach-btn" data-post-id="' + post.id + '">📎</button>' +
+            '<button class="btn btn-sm comment-submit-btn" data-post-id="' + post.id + '">Reply</button>' +
+          '</div>' +
+          '<textarea class="comment-code-area code-area" data-post-id="' + post.id + '" placeholder="Code (optional)…" style="display:none"></textarea>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
   }
 
   function attachCommentHandlers(posts) {
-    // Language select → show code area
+    document.querySelectorAll('.delete-post-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid = Number(btn.dataset.postId);
+        if (confirm('Are you sure you want to delete this post and all its comments?')) {
+          postMsg({ type: 'DELETE_POST', payload: { post_id: pid } });
+        }
+      });
+    });
+
+    document.querySelectorAll('.test-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid = Number(btn.dataset.postId);
+        const post = _currentPosts.find(p => p.id === pid);
+        if (post) {
+          testCode(pid, post.code_content, post.language);
+        }
+      });
+    });
+
     document.querySelectorAll('.comment-lang').forEach(sel => {
       sel.addEventListener('change', e => {
         const pid = e.target.dataset.postId;
-        const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+        const codeArea = document.querySelector('.comment-code-area[data-post-id="' + pid + '"]');
         if (codeArea) codeArea.style.display = sel.value ? 'block' : 'none';
       });
     });
 
-    // Attach file for comment
     document.querySelectorAll('.comment-attach-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         _pendingAttachTarget = { type: 'comment', postId: btn.dataset.postId };
@@ -745,27 +843,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       });
     });
 
-    // Clear comment attachment
     document.querySelectorAll('.comment-attach-clear').forEach(btn => {
       btn.addEventListener('click', () => {
         const pid = btn.dataset.postId;
         delete _commentAttachments[pid];
-        const strip = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"]\`);
+        const strip = document.querySelector('.comment-attach-strip[data-post-id="' + pid + '"]');
         if (strip) strip.style.display = 'none';
-        const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+        const codeArea = document.querySelector('.comment-code-area[data-post-id="' + pid + '"]');
         if (codeArea) { codeArea.value = ''; codeArea.style.display = 'none'; }
-        const lang = document.querySelector(\`.comment-lang[data-post-id="\${pid}"]\`);
+        const lang = document.querySelector('.comment-lang[data-post-id="' + pid + '"]');
         if (lang) lang.value = '';
       });
     });
 
-    // Submit comment
     document.querySelectorAll('.comment-submit-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const pid = Number(btn.dataset.postId);
-        const textarea = document.querySelector(\`.comment-textarea[data-post-id="\${pid}"]\`);
-        const langSel  = document.querySelector(\`.comment-lang[data-post-id="\${pid}"]\`);
-        const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+        const textarea = document.querySelector('.comment-textarea[data-post-id="' + pid + '"]');
+        const langSel  = document.querySelector('.comment-lang[data-post-id="' + pid + '"]');
+        const codeArea = document.querySelector('.comment-code-area[data-post-id="' + pid + '"]');
         const body = textarea?.value.trim();
         if (!body) return;
 
@@ -781,22 +877,44 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         if (codeArea) { codeArea.value = ''; codeArea.style.display = 'none'; }
         if (langSel) langSel.value = '';
         delete _commentAttachments[String(pid)];
-        const strip = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"]\`);
+        const strip = document.querySelector('.comment-attach-strip[data-post-id="' + pid + '"]');
         if (strip) strip.style.display = 'none';
       });
     });
   }
 
   // ── Attachment tracking ──────────────────────────────────────
-  let _pendingAttachTarget = null; // { type: 'post' } | { type: 'comment', postId: string }
-  const _commentAttachments = {};  // postId → { code, language }
+  let _pendingAttachTarget = null;
+  const _commentAttachments = {};
 
-  // ── Code actions (called from inline onclick) ────────────────
+  // ── Code actions ─────────────────────────────────────────────
   function openDoc(id, code, language) {
     postMsg({ type: 'OPEN_CODE_DOC', payload: { id, code, language } });
   }
   function runCode(code, language) {
     postMsg({ type: 'RUN_CODE', payload: { code, language } });
+  }
+  function testCode(postId, code, language) {
+    const post = _currentPosts.find(p => p.id === postId);
+    if (!post) return;
+    
+    const idStr = 'post-' + postId;
+    const panel = document.getElementById('test-panel-' + idStr);
+    panel.style.display = 'block';
+    panel.innerHTML = '<span style="color:var(--muted)">⌛ Testing Solution...</span>';
+    
+    activeTestTarget = { idStr, postId };
+    
+    postMsg({
+      type: 'TEST_CODE',
+      payload: {
+        code,
+        language,
+        expected_input: post.expected_input,
+        expected_output: post.expected_output,
+        problem_type: post.problem_type || 'other'
+      }
+    });
   }
 
   // ── Utilities ────────────────────────────────────────────────
@@ -812,7 +930,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
   function langOptionsHTML() {
     return ['python','cpp','javascript','typescript','c','rust','go','java','ruby','shell','bash']
-      .map(l => \`<option value="\${l}">\${l}</option>\`).join('');
+      .map(l => '<option value="' + l + '">' + l + '</option>').join('');
   }
 
   // ── Registration & UI state helpers ───────────────────────────
@@ -853,23 +971,60 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     switch (msg.type) {
       case 'FEED_DATA':
         showFeedScreen();
+        _currentPosts = msg.payload.posts;
         renderFeed(msg.payload.posts);
         break;
+      case 'TEST_RESULT': {
+        if (!activeTestTarget) break;
+        const { idStr, postId } = activeTestTarget;
+        const panel = document.getElementById('test-panel-' + idStr);
+        const res = msg.payload;
+        
+        if (res.passed) {
+          panel.innerHTML = 
+            '<div style="color:var(--success);font-weight:bold;display:flex;align-items:center;gap:4px">' +
+              '<span>✅ Test Passed!</span>' +
+            '</div>' +
+            '<pre style="background:rgba(52,211,153,0.05);border:1px solid rgba(52,211,153,0.2);padding:6px;margin-top:4px;max-height:100px;font-size:10px;white-space:pre-wrap;word-break:break-all">' + escape(res.actual_output ?? '') + '</pre>';
+        } else if (res.compile_error) {
+          panel.innerHTML = 
+            '<div style="color:var(--danger);font-weight:bold">⚠️ Compile Error</div>' +
+            '<pre style="background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.2);padding:6px;margin-top:4px;max-height:150px;color:var(--danger);font-size:10px;white-space:pre-wrap;word-break:break-all">' + escape(res.compile_error) + '</pre>';
+        } else {
+          const post = _currentPosts.find(p => p.id === postId);
+          const expected = post ? (post.expected_output || '') : '';
+          panel.innerHTML = 
+            '<div style="color:var(--danger);font-weight:bold">❌ Test Failed</div>' +
+            '<div style="color:var(--muted);margin-top:2px;font-size:10.5px">' + escape(res.error || 'Output mismatch.') + '</div>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">' +
+              '<div>' +
+                '<div style="color:var(--muted);font-size:9.5px;text-transform:uppercase;font-weight:600">Expected:</div>' +
+                '<pre style="border:1px solid var(--border);padding:4px;max-height:80px;font-size:9.5px;white-space:pre-wrap;word-break:break-all">' + escape(expected) + '</pre>' +
+              '</div>' +
+              '<div>' +
+                '<div style="color:var(--muted);font-size:9.5px;text-transform:uppercase;font-weight:600">Got:</div>' +
+                '<pre style="border:1px solid rgba(248,113,113,0.2);background:rgba(248,113,113,0.03);padding:4px;max-height:80px;font-size:9.5px;white-space:pre-wrap;word-break:break-all">' + escape(res.actual_output ?? '') + '</pre>' +
+              '</div>' +
+            '</div>';
+        }
+        activeTestTarget = null;
+        break;
+      }
       case 'PENDING_APPROVAL':
         showPendingScreen();
         break;
       case 'FILE_ATTACHED': {
         const { code, language } = msg.payload;
-        if (_pendingAttachTarget?.type === 'comment') {
+        if (_pendingAttachTarget && _pendingAttachTarget.type === 'comment') {
           const pid = _pendingAttachTarget.postId;
           _commentAttachments[pid] = { code, language };
-          const strip = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"]\`);
+          const strip = document.querySelector('.comment-attach-strip[data-post-id="' + pid + '"]');
           if (strip) { strip.style.display = 'flex'; }
-          const label = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"] .comment-attach-label\`);
-          if (label) label.textContent = \`\${language} file attached\`;
-          const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+          const label = document.querySelector('.comment-attach-strip[data-post-id="' + pid + '"] .comment-attach-label');
+          if (label) label.textContent = language + ' file attached';
+          const codeArea = document.querySelector('.comment-code-area[data-post-id="' + pid + '"]');
           if (codeArea) { codeArea.value = code; codeArea.style.display = 'block'; }
-          const langSel = document.querySelector(\`.comment-lang[data-post-id="\${pid}"]\`);
+          const langSel = document.querySelector('.comment-lang[data-post-id="' + pid + '"]');
           if (langSel) langSel.value = language;
         } else {
           // Attach to new post form
@@ -877,7 +1032,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           attachedLang = language;
           const strip = document.getElementById('post-attach-strip');
           strip.style.display = 'flex';
-          document.getElementById('post-attach-label').textContent = \`\${language} file attached\`;
+          document.getElementById('post-attach-label').textContent = language + ' file attached';
           postCode.value = code;
           postCode.style.display = 'block';
           postLang.value = language;

@@ -61,7 +61,13 @@ app.use("*", async (c, next) => {
 
 // ── GET /posts ────────────────────────────────────────────────
 app.get("/posts", async (c) => {
-  const posts = (await c.env.DB.prepare("SELECT * FROM posts ORDER BY created_at DESC LIMIT 100").all<Post>()).results;
+  const posts = (await c.env.DB.prepare(`
+    SELECT posts.*, users.username as author_username 
+    FROM posts 
+    LEFT JOIN users ON posts.user_id = users.id 
+    ORDER BY posts.created_at DESC 
+    LIMIT 100
+  `).all<Post>()).results;
   const comments = (await c.env.DB.prepare("SELECT * FROM comments ORDER BY created_at ASC").all<Comment>()).results;
   const commentsByPost = new Map<number, Comment[]>();
   for (const comment of comments) {
@@ -69,7 +75,12 @@ app.get("/posts", async (c) => {
     list.push(comment);
     commentsByPost.set(comment.post_id, list);
   }
-  const feed: PostWithComments[] = posts.map((p) => ({ ...p, comments: commentsByPost.get(p.id) ?? [] }));
+  const user = c.get("user");
+  const feed: PostWithComments[] = posts.map((p) => ({ 
+    ...p, 
+    is_owner: p.user_id === user.id || user.role === "admin",
+    comments: commentsByPost.get(p.id) ?? [] 
+  }));
   return ok<FeedResponse>({ posts: feed });
 });
 
@@ -78,10 +89,32 @@ app.post("/posts", async (c) => {
   const user = c.get("user");
   const body = await c.req.json<CreatePostRequest>().catch(() => null);
   if (!body?.title || !body?.body) return err("title and body are required");
-  const result = await c.env.DB.prepare("INSERT INTO posts (user_id, title, body, code_content, language) VALUES (?, ?, ?, ?, ?)")
-    .bind(user.id, body.title, body.body, body.code_content ?? null, body.language ?? null).run();
-  const post = await c.env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(result.meta.last_row_id).first<Post>();
+  const result = await c.env.DB.prepare("INSERT INTO posts (user_id, title, body, code_content, language, link, problem_type, expected_input, expected_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(user.id, body.title, body.body, body.code_content ?? null, body.language ?? null, body.link ?? null, body.problem_type ?? 'other', body.expected_input ?? null, body.expected_output ?? null).run();
+  const post = await c.env.DB.prepare(`
+    SELECT posts.*, users.username as author_username 
+    FROM posts 
+    LEFT JOIN users ON posts.user_id = users.id 
+    WHERE posts.id = ?
+  `).bind(result.meta.last_row_id).first<Post>();
   return ok<Post>(post!, 201);
+});
+
+// ── DELETE /posts/:id ─────────────────────────────────────────
+app.delete("/posts/:id", async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (Number.isNaN(id)) return err("Invalid id");
+  
+  const post = await c.env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first<Post>();
+  if (!post) return err("Post not found", 404);
+  
+  if (post.user_id !== user.id && user.role !== "admin") {
+    return err("Unauthorized to delete this post", 403);
+  }
+  
+  await c.env.DB.prepare("DELETE FROM posts WHERE id = ?").bind(id).run();
+  return ok({ ok: true, message: "Post deleted" });
 });
 
 // ── POST /comments ────────────────────────────────────────────
@@ -183,6 +216,24 @@ input[type=password]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(-
   <td><span class="badge ${u.status}">${u.status === "pending" ? "⏳ Pending" : "✅ Approved"}</span></td>
   <td class="date-cell">${new Date(u.created_at).toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}</td>
   <td>${u.status === "pending" ? `<button class="approve-btn" onclick="approve(${u.id},this)">Approve</button>` : `<span class="done-tag">Active</span>`}</td>
+</tr>`).join("");
+
+  const posts = (await c.env.DB.prepare(`
+    SELECT posts.*, users.username as author_username 
+    FROM posts 
+    LEFT JOIN users ON posts.user_id = users.id 
+    ORDER BY posts.created_at DESC
+  `).all<Post & { author_username: string }>()).results;
+
+  const postRows = posts.map(p => `
+<tr id="post-row-${p.id}">
+  <td><span class="uid">#${p.id}</span></td>
+  <td><strong class="uname">${p.author_username || "User #" + p.user_id}</strong></td>
+  <td><span class="post-title-text">${p.title}</span></td>
+  <td><span class="role-badge">${p.language || "none"}</span></td>
+  <td><span class="badge approved" style="text-transform:uppercase">${p.problem_type}</span></td>
+  <td class="date-cell">${new Date(p.created_at).toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}</td>
+  <td><button class="approve-btn" style="background:var(--err);box-shadow:none" onclick="deletePost(${p.id},this)">Delete</button></td>
 </tr>`).join("");
 
   return new Response(`<!DOCTYPE html>
@@ -294,6 +345,17 @@ td{padding:.75rem 1.25rem;font-size:.85rem;vertical-align:middle}
         <tbody>${rows || `<tr><td colspan="7" class="empty">No users yet.</td></tr>`}</tbody>
       </table>
     </div>
+
+    <div class="tcard" style="margin-top:2rem">
+      <div class="thead-row">
+        <span class="tcard-title">All Posts</span>
+        <input class="search" type="text" placeholder="🔍  Search…" oninput="filterPostTable(this.value)"/>
+      </div>
+      <table id="ptbl">
+        <thead><tr><th>ID</th><th>Author</th><th>Title</th><th>Language</th><th>Problem Type</th><th>Created</th><th>Action</th></tr></thead>
+        <tbody>${postRows || `<tr><td colspan="7" class="empty">No posts yet.</td></tr>`}</tbody>
+      </table>
+    </div>
   </main>
 </div>
 <div class="toast" id="toast"></div>
@@ -318,6 +380,35 @@ async function approve(id,btn){
 function filterTable(q){
   document.querySelectorAll('#utbl tbody tr').forEach(r=>{r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'':'none';});
 }
+async function deletePost(id, btn) {
+  if (!confirm("Are you sure you want to delete post #" + id + "?")) return;
+  btn.disabled = true;
+  btn.textContent = 'Deleting...';
+  try {
+    const res = await fetch('/admin/posts/delete/' + id, {
+      method: 'POST',
+      headers: { 'X-Admin-Secret': SECRET }
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      document.getElementById('post-row-' + id).remove();
+      toast('✅ Post #' + id + ' deleted!', 'success');
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Delete';
+      toast('Error: ' + (data.error || 'Unknown'), 'error');
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+    toast('Network error', 'error');
+  }
+}
+function filterPostTable(q) {
+  document.querySelectorAll('#ptbl tbody tr').forEach(r => {
+    r.style.display = r.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
+  });
+}
 function toast(msg,type='success'){
   const t=document.getElementById('toast');
   t.textContent=msg;t.className='toast '+type;t.classList.add('show');
@@ -336,6 +427,17 @@ app.post("/admin/approve/:id", async (c) => {
   if (!user) return err("User not found", 404);
   await c.env.DB.prepare("UPDATE users SET status = 'approved' WHERE id = ?").bind(id).run();
   return ok({ ok: true, message: `User ${id} approved` });
+});
+
+// ── POST /admin/posts/delete/:id ─────────────────────────────
+app.post("/admin/posts/delete/:id", async (c) => {
+  if (!checkAdminSecret(c, false)) return err("Forbidden", 403);
+  const id = Number(c.req.param("id"));
+  if (Number.isNaN(id)) return err("Invalid id");
+  const post = await c.env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(id).first<{ id: number }>();
+  if (!post) return err("Post not found", 404);
+  await c.env.DB.prepare("DELETE FROM posts WHERE id = ?").bind(id).run();
+  return ok({ ok: true, message: `Post ${id} deleted` });
 });
 
 // ── 404 ───────────────────────────────────────────────────────

@@ -18,14 +18,24 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- ── Posts ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS posts (
-  id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-  user_id      INTEGER  NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  title        TEXT     NOT NULL,
-  body         TEXT     NOT NULL,
-  code_content TEXT,
-  language     TEXT,
-  created_at   DATETIME NOT NULL DEFAULT (datetime('now'))
+  id              INTEGER  PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER  NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  title           TEXT     NOT NULL,
+  body            TEXT     NOT NULL,
+  code_content    TEXT,
+  language        TEXT,
+  link            TEXT,
+  problem_type    TEXT     NOT NULL DEFAULT 'other' CHECK (problem_type IN ('leetcode', 'atcoder-cf', 'other')),
+  expected_input  TEXT,
+  expected_output TEXT,
+  created_at      DATETIME NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Migration for existing databases:
+-- wrangler d1 execute cpques_db --command="ALTER TABLE posts ADD COLUMN link TEXT" --remote
+-- wrangler d1 execute cpques_db --command="ALTER TABLE posts ADD COLUMN problem_type TEXT NOT NULL DEFAULT 'other'" --remote
+-- wrangler d1 execute cpques_db --command="ALTER TABLE posts ADD COLUMN expected_input TEXT" --remote
+-- wrangler d1 execute cpques_db --command="ALTER TABLE posts ADD COLUMN expected_output TEXT" --remote
 
 CREATE INDEX IF NOT EXISTS idx_posts_user_id    ON posts (user_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts (created_at DESC);

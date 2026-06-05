@@ -24,6 +24,12 @@ export interface Post {
   body: string;
   code_content: string | null;
   language: string | null;
+  link: string | null;
+  problem_type: "leetcode" | "atcoder-cf" | "other";
+  expected_input: string | null;
+  expected_output: string | null;
+  author_username: string | null;
+  is_owner?: boolean;
   created_at: string;
 }
 
@@ -56,6 +62,10 @@ export interface CreatePostRequest {
   body: string;
   code_content?: string;
   language?: string;
+  link?: string;
+  problem_type?: "leetcode" | "atcoder-cf" | "other";
+  expected_input?: string;
+  expected_output?: string;
 }
 
 /** POST /comments */
@@ -90,7 +100,9 @@ export type WebviewToExtensionMessage =
   | { type: "CREATE_POST"; payload: CreatePostRequest }
   | { type: "CREATE_COMMENT"; payload: CreateCommentRequest }
   | { type: "REFRESH_FEED" }
-  | { type: "TRIGGER_REGISTER" };
+  | { type: "TRIGGER_REGISTER" }
+  | { type: "DELETE_POST"; payload: { post_id: number } }
+  | { type: "TEST_CODE"; payload: { code: string; language: string; expected_input: string | null; expected_output: string | null; problem_type: "leetcode" | "atcoder-cf" | "other" } };
 
 export type ExtensionToWebviewMessage =
   | { type: "FEED_DATA"; payload: FeedResponse }
@@ -98,4 +110,5 @@ export type ExtensionToWebviewMessage =
   | { type: "ERROR"; payload: { message: string } }
   | { type: "PENDING_APPROVAL" }
   | { type: "POST_CREATED"; payload: Post }
-  | { type: "COMMENT_CREATED"; payload: Comment };
+  | { type: "COMMENT_CREATED"; payload: Comment }
+  | { type: "TEST_RESULT"; payload: { passed: boolean; actual_output?: string; error?: string; compile_error?: string } };
