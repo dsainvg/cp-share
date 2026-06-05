@@ -1,10 +1,17 @@
+# ── Exclude the entire monorepo parent (critical for workspaces) ──
+../**
+
+# ── Dev / config files inside extension/ ─────────────────────────
 .vscode/**
 .vscode-test/**
 node_modules/**
-out/**
 src/**
-.gitignore
 tsconfig.json
+.gitignore
 **/*.map
 **/*.ts
+
+# ── Re-include what the VSIX actually needs ───────────────────────
 !out/**
+!media/**
+!package.json

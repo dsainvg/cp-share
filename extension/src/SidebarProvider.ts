@@ -88,7 +88,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   // ── API helpers ───────────────────────────────────────────────
-  private _headers(): HeadersInit {
+  private _headers(): Record<string, string> {
     return {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this._authKey}`,

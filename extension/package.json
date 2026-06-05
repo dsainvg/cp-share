@@ -1,5 +1,5 @@
 {
-  "name": "@cp-share/extension",
+  "name": "cp-share",
   "version": "0.0.1",
   "private": true,
   "displayName": "CP Share",
@@ -46,8 +46,9 @@
     }
   },
   "scripts": {
-    "build": "tsc -p ./",
-    "vscode:prepublish": "npm run compile",
+    "build:shared": "tsc -p ../shared/tsconfig.json",
+    "build": "npm run build:shared && tsc -p ./",
+    "vscode:prepublish": "npm run build:shared && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./"
   },
