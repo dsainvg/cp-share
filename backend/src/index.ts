@@ -2,6 +2,7 @@
 // backend/src/index.ts — Hono app entry point
 // ============================================================
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { cors } from "hono/cors";
 import type {
   User,
@@ -31,9 +32,16 @@ function err(message: string, status: 400 | 403 | 404 | 409 | 500 = 400): Respon
 app.post("/register", async (c) => {
   const body = await c.req.json<RegisterRequest>().catch(() => null);
   if (!body?.auth_key) return err("auth_key is required");
+  if (!body?.username || body.username.trim().length < 2) return err("username must be at least 2 characters");
+  const username = body.username.trim().slice(0, 32);
+
   const existing = await c.env.DB.prepare("SELECT id FROM users WHERE auth_key = ?").bind(body.auth_key).first<{ id: number }>();
   if (existing) return err("auth_key already registered", 409);
-  await c.env.DB.prepare("INSERT INTO users (auth_key, role, status) VALUES (?, 'user', 'pending')").bind(body.auth_key).run();
+
+  const takenName = await c.env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first<{ id: number }>();
+  if (takenName) return err(`Username "${username}" is already taken`, 409);
+
+  await c.env.DB.prepare("INSERT INTO users (auth_key, username, role, status) VALUES (?, ?, 'user', 'pending')").bind(body.auth_key, username).run();
   return ok<RegisterResponse>({ ok: true, message: "Registered — awaiting approval" }, 201);
 });
 
@@ -90,9 +98,9 @@ app.post("/comments", async (c) => {
 });
 
 // ── Admin secret helper ───────────────────────────────────────
-function checkAdminSecret(c: Parameters<Parameters<typeof app.use>[1]>[0], fromQuery = false): boolean {
+function checkAdminSecret(c: Context<any>, fromQuery = false): boolean {
   const secret = fromQuery ? (c.req.query("secret") ?? "") : (c.req.header("X-Admin-Secret") ?? "");
-  return secret !== "" && secret === c.env.ADMIN_SECRET;
+  return secret !== "" && secret === (c.env as Env).ADMIN_SECRET;
 }
 
 // ── GET /admin/users — Login + Dashboard ─────────────────────
@@ -169,7 +177,8 @@ input[type=password]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(-
   const rows = users.map(u => `
 <tr id="row-${u.id}">
   <td><span class="uid">#${u.id}</span></td>
-  <td><code class="key">${u.auth_key.slice(0, 12)}…</code></td>
+  <td><strong class="uname">${u.username || "<em style='opacity:.4'>unknown</em>"}</strong></td>
+  <td><code class="key">${u.auth_key.slice(0, 10)}…</code></td>
   <td><span class="role-badge">${u.role}</span></td>
   <td><span class="badge ${u.status}">${u.status === "pending" ? "⏳ Pending" : "✅ Approved"}</span></td>
   <td class="date-cell">${new Date(u.created_at).toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}</td>
@@ -281,8 +290,8 @@ td{padding:.75rem 1.25rem;font-size:.85rem;vertical-align:middle}
         <input class="search" type="text" placeholder="🔍  Search…" oninput="filterTable(this.value)"/>
       </div>
       <table id="utbl">
-        <thead><tr><th>ID</th><th>Auth Key</th><th>Role</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="6" class="empty">No users yet.</td></tr>`}</tbody>
+        <thead><tr><th>ID</th><th>Username</th><th>Auth Key</th><th>Role</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7" class="empty">No users yet.</td></tr>`}</tbody>
       </table>
     </div>
   </main>

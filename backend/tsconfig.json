@@ -8,10 +8,7 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "paths": {
-      "@cp-share/shared": ["../shared/src/index.ts"]
-    }
+    "rootDir": "src"
   },
-  "include": ["src", "../shared/src"]
+  "include": ["src"]
 }

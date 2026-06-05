@@ -30,36 +30,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ── 2. Auth lifecycle: ensure auth key exists ───────────────
   let authKey = context.globalState.get<string>("cp-share.authKey");
 
-  if (!authKey) {
-    authKey = crypto.randomUUID();
-    await context.globalState.update("cp-share.authKey", authKey);
-
-    setStatusBar(statusBar, "registering");
-
-    try {
-      const body: RegisterRequest = { auth_key: authKey };
-      const res = await fetch(`${API_BASE}/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json() as { ok: boolean; message?: string; error?: string };
-
-      if (data.ok) {
-        vscode.window.showInformationMessage(
-          "CP Share: ✅ Registered! Waiting for admin approval before you can post."
-        );
-        setStatusBar(statusBar, "pending");
-      } else {
-        vscode.window.showWarningMessage(`CP Share: ${data.error ?? "Registration failed"}`);
-        setStatusBar(statusBar, "error");
-      }
-    } catch (e) {
-      vscode.window.showErrorMessage(`CP Share: Could not reach API — ${String(e)}`);
-      setStatusBar(statusBar, "error");
-    }
-  }
-
   // ── 3. Virtual document provider ────────────────────────────
   const communityCodeProvider = new CommunityCodeProvider();
   context.subscriptions.push(
@@ -72,7 +42,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ── 4. Sidebar webview provider ─────────────────────────────
   const sidebarProvider = new SidebarProvider(
     context.extensionUri,
-    authKey,
+    authKey ?? "",
     communityCodeProvider
   );
   context.subscriptions.push(
@@ -80,47 +50,125 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // ── 5. Approval polling — checks every 30s while pending ────
-  // Stops automatically once the user is approved.
   let pollTimer: ReturnType<typeof setInterval> | undefined;
 
-  const checkApproval = async (): Promise<boolean> => {
-    try {
-      const res = await fetch(`${API_BASE}/posts`, {
-        headers: { Authorization: `Bearer ${authKey}` },
-      });
+  const startApprovalPolling = (key: string) => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+    }
 
-      if (res.ok) {
-        // 200 → approved!
-        clearInterval(pollTimer);
-        setStatusBar(statusBar, "approved");
-        vscode.window.showInformationMessage(
-          "CP Share: 🎉 Your account has been approved! Welcome to the community."
-        );
-        sidebarProvider.notifyApproved();
-        return true;
-      }
+    const checkApproval = async (): Promise<boolean> => {
+      try {
+        const res = await fetch(`${API_BASE}/posts`, {
+          headers: { Authorization: `Bearer ${key}` },
+        });
 
-      const data = await res.json() as { error?: string };
-      if (res.status === 403 && data.error?.includes("pending")) {
-        setStatusBar(statusBar, "pending");
-        sidebarProvider.notifyPending();
-      } else {
+        if (res.ok) {
+          clearInterval(pollTimer);
+          setStatusBar(statusBar, "approved");
+          vscode.window.showInformationMessage(
+            "CP Share: 🎉 Your account has been approved! Welcome to the community."
+          );
+          sidebarProvider.notifyApproved();
+          return true;
+        }
+
+        const data = await res.json() as { error?: string };
+        if (res.status === 403 && data.error?.includes("pending")) {
+          setStatusBar(statusBar, "pending");
+          sidebarProvider.notifyPending();
+        } else {
+          setStatusBar(statusBar, "error");
+        }
+      } catch {
         setStatusBar(statusBar, "error");
       }
-    } catch {
-      setStatusBar(statusBar, "error");
-    }
-    return false;
-  };
+      return false;
+    };
 
-  // Run once immediately, then start polling if not yet approved
-  const alreadyApproved = await checkApproval();
-  if (!alreadyApproved) {
+    checkApproval(); // Run once immediately
     pollTimer = setInterval(checkApproval, POLL_INTERVAL_MS);
     context.subscriptions.push({ dispose: () => clearInterval(pollTimer) });
+  };
+
+  const registerUser = async (): Promise<string | null> => {
+    let username = await vscode.window.showInputBox({
+      title: "CP Share: Choose a Username",
+      prompt: "Enter a username to register with CP Share. Others will see this when you share or comment.",
+      placeHolder: "e.g., alice123",
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        if (!value || value.trim().length < 2) {
+          return "Username must be at least 2 characters long.";
+        }
+        if (value.trim().length > 32) {
+          return "Username must be at most 32 characters long.";
+        }
+        return null;
+      }
+    });
+
+    if (username === undefined) {
+      vscode.window.showWarningMessage("CP Share: Registration cancelled.");
+      return null;
+    }
+
+    const trimmedUsername = username.trim();
+    const tempAuthKey = crypto.randomUUID();
+    setStatusBar(statusBar, "registering");
+
+    try {
+      const body: RegisterRequest = { auth_key: tempAuthKey, username: trimmedUsername };
+      const res = await fetch(`${API_BASE}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json() as { ok: boolean; message?: string; error?: string };
+
+      if (res.ok && data.ok) {
+        await context.globalState.update("cp-share.authKey", tempAuthKey);
+        authKey = tempAuthKey;
+        vscode.window.showInformationMessage(
+          `CP Share: ✅ Registered as "${trimmedUsername}"! Waiting for admin approval.`
+        );
+        setStatusBar(statusBar, "pending");
+        sidebarProvider.updateAuthKey(tempAuthKey);
+        startApprovalPolling(tempAuthKey);
+        return tempAuthKey;
+      } else {
+        vscode.window.showErrorMessage(`CP Share: ${data.error ?? "Registration failed"}`);
+        setStatusBar(statusBar, "error");
+        return null;
+      }
+    } catch (e) {
+      vscode.window.showErrorMessage(`CP Share: Could not reach API — ${String(e)}`);
+      setStatusBar(statusBar, "error");
+      return null;
+    }
+  };
+
+  if (authKey) {
+    startApprovalPolling(authKey);
+  } else {
+    // If not registered yet, configure status bar to show registration prompt on click
+    statusBar.text = "$(key) CP Share: Register";
+    statusBar.tooltip = "CP Share: Click to register a username";
+    statusBar.command = "cp-share.register";
   }
 
-  // ── 6. Command: open sidebar ─────────────────────────────────
+  // ── 6. Command: Register User ────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("cp-share.register", async () => {
+      if (context.globalState.get<string>("cp-share.authKey")) {
+        vscode.window.showInformationMessage("CP Share: Already registered.");
+        return;
+      }
+      await registerUser();
+    })
+  );
+
+  // ── 6b. Command: open sidebar ─────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("cp-share.openSidebar", () => {
       vscode.commands.executeCommand("cp-share.sidebarView.focus");

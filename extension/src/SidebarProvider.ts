@@ -16,7 +16,7 @@ const API_BASE = "https://api.cpshare.dsainvg.me";
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
-  private readonly _authKey: string;
+  private _authKey: string;
   private readonly _codeProvider: CommunityCodeProvider;
 
   constructor(
@@ -26,6 +26,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   ) {
     this._authKey = authKey;
     this._codeProvider = codeProvider;
+  }
+
+  updateAuthKey(authKey: string): void {
+    this._authKey = authKey;
+    if (this._view) {
+      this._view.webview.html = this._buildHtml(this._view.webview);
+      this._fetchAndPostFeed();
+    }
   }
 
   // ── VS Code calls this when the view becomes visible ─────────
@@ -71,6 +79,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   // ── Message handler ───────────────────────────────────────────
   private async _handleMessage(msg: WebviewToExtensionMessage): Promise<void> {
     switch (msg.type) {
+      case "TRIGGER_REGISTER":
+        vscode.commands.executeCommand("cp-share.register");
+        break;
+
       case "REFRESH_FEED":
         await this._fetchAndPostFeed();
         break;
@@ -497,9 +509,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       0%, 80%, 100% { transform: scale(0.6); opacity: .4; }
       40%           { transform: scale(1);   opacity: 1; }
     }
+    #register-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 32px 16px;
+      gap: 12px;
+      animation: fadeIn .3s ease;
+    }
+    #register-screen.visible { display: flex; }
+    .brand-logo {
+      font-size: 48px;
+      color: var(--accent-light);
+      filter: drop-shadow(0 0 8px var(--accent));
+      margin-bottom: 8px;
+    }
   </style>
 </head>
-<body>
+<body data-auth-key-hint="${this._authKey}">
 
 <!-- ── Toolbar ──────────────────────────────────────────────── -->
 <div class="toolbar">
@@ -533,6 +561,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       <button class="btn btn-sm" id="btn-submit-post">Publish</button>
     </div>
   </details>
+</div>
+
+<!-- ── Register screen ─────────────────────────────── -->
+<div id="register-screen">
+  <div class="brand-logo">⬡</div>
+  <div class="pending-title">Welcome to CP Share</div>
+  <div class="pending-sub">
+    Share competitive programming solutions with your team instantly. Choose a username to register.
+  </div>
+  <button class="btn" id="btn-register-trigger">Register Username</button>
 </div>
 
 <!-- ── Pending approval screen ─────────────────────────────── -->
@@ -777,18 +815,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       .map(l => \`<option value="\${l}">\${l}</option>\`).join('');
   }
 
-  // ── Pending screen helpers ────────────────────────────────────
+  // ── Registration & UI state helpers ───────────────────────────
+  function showRegisterScreen() {
+    document.getElementById('register-screen').classList.add('visible');
+    document.getElementById('pending-screen').classList.remove('visible');
+    document.getElementById('feed').style.display = 'none';
+    document.querySelector('.form-card').style.display = 'none';
+    document.getElementById('btn-attach').style.display = 'none';
+  }
   function showPendingScreen() {
+    document.getElementById('register-screen').classList.remove('visible');
     document.getElementById('pending-screen').classList.add('visible');
     document.getElementById('feed').style.display = 'none';
     document.querySelector('.form-card').style.display = 'none';
     document.getElementById('btn-attach').style.display = 'none';
   }
   function showFeedScreen() {
+    document.getElementById('register-screen').classList.remove('visible');
     document.getElementById('pending-screen').classList.remove('visible');
     document.getElementById('feed').style.display = 'flex';
     document.querySelector('.form-card').style.display = 'block';
     document.getElementById('btn-attach').style.display = '';
+  }
+
+  document.getElementById('btn-register-trigger').addEventListener('click', () => {
+    postMsg({ type: 'TRIGGER_REGISTER' });
+  });
+
+  const hasAuthKey = document.body.dataset.authKeyHint !== '';
+  if (!hasAuthKey) {
+    showRegisterScreen();
   }
 
   // ── Extension → Webview messages ────────────────────────────

@@ -11,6 +11,7 @@ export type UserStatus = "pending" | "approved";
 export interface User {
   id: number;
   auth_key: string;
+  username: string;
   role: UserRole;
   status: UserStatus;
   created_at: string; // ISO-8601
@@ -41,6 +42,7 @@ export interface Comment {
 /** POST /register */
 export interface RegisterRequest {
   auth_key: string;
+  username: string;
 }
 
 export interface RegisterResponse {
@@ -87,7 +89,8 @@ export type WebviewToExtensionMessage =
   | { type: "OPEN_CODE_DOC"; payload: { id: number | string; code: string; language: string } }
   | { type: "CREATE_POST"; payload: CreatePostRequest }
   | { type: "CREATE_COMMENT"; payload: CreateCommentRequest }
-  | { type: "REFRESH_FEED" };
+  | { type: "REFRESH_FEED" }
+  | { type: "TRIGGER_REGISTER" };
 
 export type ExtensionToWebviewMessage =
   | { type: "FEED_DATA"; payload: FeedResponse }

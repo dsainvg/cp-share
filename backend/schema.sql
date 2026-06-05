@@ -7,10 +7,14 @@
 CREATE TABLE IF NOT EXISTS users (
   id         INTEGER  PRIMARY KEY AUTOINCREMENT,
   auth_key   TEXT     NOT NULL UNIQUE,
+  username   TEXT     NOT NULL DEFAULT '',
   role       TEXT     NOT NULL DEFAULT 'user'    CHECK (role IN ('user', 'admin')),
   status     TEXT     NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved')),
   created_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Migration for existing databases (safe to run, ignored if column already exists)
+-- Run manually if upgrading: wrangler d1 execute cpques_db --command="ALTER TABLE users ADD COLUMN username TEXT NOT NULL DEFAULT ''" --remote
 
 -- ── Posts ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS posts (
