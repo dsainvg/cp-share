@@ -61,20 +61,30 @@ app.use("*", async (c, next) => {
 
 // ── GET /posts ────────────────────────────────────────────────
 app.get("/posts", async (c) => {
-  const posts = (await c.env.DB.prepare(`
+  const postsResult = await c.env.DB.prepare(`
     SELECT posts.*, users.username as author_username 
     FROM posts 
     LEFT JOIN users ON posts.user_id = users.id 
     ORDER BY posts.created_at DESC 
     LIMIT 100
-  `).all<Post>()).results;
-  const comments = (await c.env.DB.prepare("SELECT * FROM comments ORDER BY created_at ASC").all<Comment>()).results;
+  `).all<Post>();
+  const posts = postsResult.results ?? [];
+
+  const commentsResult = await c.env.DB.prepare(`
+    SELECT comments.*, users.username as author_username 
+    FROM comments 
+    LEFT JOIN users ON comments.user_id = users.id 
+    ORDER BY comments.created_at ASC
+  `).all<Comment & { author_username: string | null }>();
+  const comments = commentsResult.results ?? [];
+
   const commentsByPost = new Map<number, Comment[]>();
   for (const comment of comments) {
     const list = commentsByPost.get(comment.post_id) ?? [];
     list.push(comment);
     commentsByPost.set(comment.post_id, list);
   }
+
   const user = c.get("user");
   const feed: PostWithComments[] = posts.map((p) => ({ 
     ...p, 
@@ -91,12 +101,27 @@ app.post("/posts", async (c) => {
   if (!body?.title || !body?.body) return err("title and body are required");
   const result = await c.env.DB.prepare("INSERT INTO posts (user_id, title, body, code_content, language, link, problem_type, expected_input, expected_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .bind(user.id, body.title, body.body, body.code_content ?? null, body.language ?? null, body.link ?? null, body.problem_type ?? 'other', body.expected_input ?? null, body.expected_output ?? null).run();
-  const post = await c.env.DB.prepare(`
-    SELECT posts.*, users.username as author_username 
-    FROM posts 
-    LEFT JOIN users ON posts.user_id = users.id 
-    WHERE posts.id = ?
-  `).bind(result.meta.last_row_id).first<Post>();
+  
+  const lastRowId = result.meta?.last_row_id;
+  let post: Post | null = null;
+  if (lastRowId) {
+    post = await c.env.DB.prepare(`
+      SELECT posts.*, users.username as author_username 
+      FROM posts 
+      LEFT JOIN users ON posts.user_id = users.id 
+      WHERE posts.id = ?
+    `).bind(lastRowId).first<Post>();
+  }
+  if (!post) {
+    post = await c.env.DB.prepare(`
+      SELECT posts.*, users.username as author_username 
+      FROM posts 
+      LEFT JOIN users ON posts.user_id = users.id 
+      WHERE posts.user_id = ? 
+      ORDER BY posts.created_at DESC 
+      LIMIT 1
+    `).bind(user.id).first<Post>();
+  }
   return ok<Post>(post!, 201);
 });
 
@@ -126,7 +151,15 @@ app.post("/comments", async (c) => {
   if (!post) return err("Post not found", 404);
   const result = await c.env.DB.prepare("INSERT INTO comments (post_id, user_id, body, code_content, language) VALUES (?, ?, ?, ?, ?)")
     .bind(body.post_id, user.id, body.body, body.code_content ?? null, body.language ?? null).run();
-  const comment = await c.env.DB.prepare("SELECT * FROM comments WHERE id = ?").bind(result.meta.last_row_id).first<Comment>();
+  
+  const lastRowId = result.meta?.last_row_id;
+  let comment: Comment | null = null;
+  if (lastRowId) {
+    comment = await c.env.DB.prepare("SELECT * FROM comments WHERE id = ?").bind(lastRowId).first<Comment>();
+  }
+  if (!comment) {
+    comment = await c.env.DB.prepare("SELECT * FROM comments WHERE user_id = ? ORDER BY created_at DESC LIMIT 1").bind(user.id).first<Comment>();
+  }
   return ok<Comment>(comment!, 201);
 });
 

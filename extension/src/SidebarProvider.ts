@@ -722,7 +722,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   // ── Feed rendering ───────────────────────────────────────────
   function renderFeed(posts) {
     const feed = document.getElementById('feed');
-    if (!posts.length) {
+    if (!posts || !posts.length) {
       feed.innerHTML = '<div class="empty-state"><div class="emoji">📭</div>No posts yet. Be the first!</div>';
       return;
     }
@@ -1040,9 +1040,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         _pendingAttachTarget = null;
         break;
       }
-      case 'ERROR':
+      case 'ERROR': {
         showError(msg.payload.message);
+        const feed = document.getElementById('feed');
+        if (feed && (feed.innerHTML.includes('Loading feed') || feed.querySelector('.spinner'))) {
+          feed.innerHTML = '<div class="empty-state"><div class="emoji">⚠️</div>' + escape(msg.payload.message) + '</div>';
+        }
         break;
+      }
     }
   });
 
