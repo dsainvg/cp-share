@@ -93,5 +93,6 @@ export type ExtensionToWebviewMessage =
   | { type: "FEED_DATA"; payload: FeedResponse }
   | { type: "FILE_ATTACHED"; payload: { code: string; language: string } }
   | { type: "ERROR"; payload: { message: string } }
+  | { type: "PENDING_APPROVAL" }
   | { type: "POST_CREATED"; payload: Post }
   | { type: "COMMENT_CREATED"; payload: Comment };

@@ -57,6 +57,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(msg);
   }
 
+  /** Called by extension.ts polling when user is still pending. */
+  notifyPending(): void {
+    this.postMessage({ type: "PENDING_APPROVAL" });
+  }
+
+  /** Called by extension.ts polling when approval is detected. */
+  notifyApproved(): void {
+    // Transition the webview from pending screen → live feed
+    this._fetchAndPostFeed();
+  }
+
   // ── Message handler ───────────────────────────────────────────
   private async _handleMessage(msg: WebviewToExtensionMessage): Promise<void> {
     switch (msg.type) {
@@ -102,7 +113,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       });
       if (!res.ok) {
         const data = await res.json() as { error?: string };
-        this.postMessage({ type: "ERROR", payload: { message: data.error ?? "Failed to load feed" } });
+        // Distinguish pending-approval 403 from other errors
+        if (res.status === 403 && data.error?.includes("pending")) {
+          this.postMessage({ type: "PENDING_APPROVAL" });
+        } else {
+          this.postMessage({ type: "ERROR", payload: { message: data.error ?? "Failed to load feed" } });
+        }
         return;
       }
       const data = await res.json() as FeedResponse;
@@ -422,6 +438,65 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
     }
     .empty-state .emoji { font-size: 28px; margin-bottom: 8px; }
+
+    /* ── Pending approval screen ─────────────────────────── */
+    #pending-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 32px 16px;
+      gap: 12px;
+      animation: fadeIn .3s ease;
+    }
+    #pending-screen.visible { display: flex; }
+    .pending-clock {
+      font-size: 40px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1);   opacity: 1; }
+      50%       { transform: scale(1.12); opacity: .7; }
+    }
+    .pending-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent-light);
+    }
+    .pending-sub {
+      font-size: 11.5px;
+      color: var(--muted);
+      line-height: 1.6;
+      max-width: 200px;
+    }
+    .pending-key {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      background: #1e1b4b;
+      border: 1px solid var(--accent);
+      color: var(--accent-light);
+      padding: 4px 10px;
+      border-radius: 4px;
+      word-break: break-all;
+      max-width: 100%;
+    }
+    .pending-dot-row {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: dotBounce 1.2s ease-in-out infinite;
+    }
+    .dot:nth-child(2) { animation-delay: .2s; }
+    .dot:nth-child(3) { animation-delay: .4s; }
+    @keyframes dotBounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: .4; }
+      40%           { transform: scale(1);   opacity: 1; }
+    }
   </style>
 </head>
 <body>
@@ -458,6 +533,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       <button class="btn btn-sm" id="btn-submit-post">Publish</button>
     </div>
   </details>
+</div>
+
+<!-- ── Pending approval screen ─────────────────────────────── -->
+<div id="pending-screen">
+  <div class="pending-clock">⏳</div>
+  <div class="pending-title">Waiting for approval</div>
+  <div class="pending-sub">
+    Your account is registered. An admin will approve you shortly.
+    Checking automatically every 30 seconds.
+  </div>
+  <div class="pending-dot-row">
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+  </div>
+  <div class="pending-sub" style="margin-top:4px">Share this key with the admin:</div>
+  <div class="pending-key" id="pending-key-display">…</div>
 </div>
 
 <!-- ── Feed ─────────────────────────────────────────────────── -->
@@ -685,12 +777,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       .map(l => \`<option value="\${l}">\${l}</option>\`).join('');
   }
 
+  // ── Pending screen helpers ────────────────────────────────────
+  function showPendingScreen() {
+    document.getElementById('pending-screen').classList.add('visible');
+    document.getElementById('feed').style.display = 'none';
+    document.querySelector('.form-card').style.display = 'none';
+    document.getElementById('btn-attach').style.display = 'none';
+  }
+  function showFeedScreen() {
+    document.getElementById('pending-screen').classList.remove('visible');
+    document.getElementById('feed').style.display = 'flex';
+    document.querySelector('.form-card').style.display = 'block';
+    document.getElementById('btn-attach').style.display = '';
+  }
+
   // ── Extension → Webview messages ────────────────────────────
   window.addEventListener('message', event => {
     const msg = event.data;
     switch (msg.type) {
       case 'FEED_DATA':
+        showFeedScreen();
         renderFeed(msg.payload.posts);
+        break;
+      case 'PENDING_APPROVAL':
+        showPendingScreen();
         break;
       case 'FILE_ATTACHED': {
         const { code, language } = msg.payload;
@@ -724,6 +834,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         break;
     }
   });
+
+  // Show auth key in pending screen so user can share it with admin
+  // (injected as a data attribute on the body to avoid exposing it in HTML source)
+  const keyDisplay = document.getElementById('pending-key-display');
+  if (keyDisplay && document.body.dataset.authKeyHint) {
+    keyDisplay.textContent = document.body.dataset.authKeyHint;
+  }
 </script>
 </body>
 </html>`;
