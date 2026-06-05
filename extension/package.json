@@ -1,0 +1,61 @@
+{
+  "name": "@cp-share/extension",
+  "version": "0.0.1",
+  "private": true,
+  "displayName": "CP Share",
+  "description": "Community code-sharing sidebar for VS Code",
+  "publisher": "dsainvg",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cp-share.runCodeLocally",
+        "title": "CP Share: Run Code Locally"
+      },
+      {
+        "command": "cp-share.openCodeDoc",
+        "title": "CP Share: Open Code in Editor"
+      },
+      {
+        "command": "cp-share.attachFile",
+        "title": "CP Share: Attach Current File"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cp-share-sidebar",
+          "title": "CP Share",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cp-share-sidebar": [
+        {
+          "type": "webview",
+          "id": "cp-share.sidebarView",
+          "name": "Community Feed"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "@cp-share/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,746 @@
+// ============================================================
+// extension/src/SidebarProvider.ts — WebviewViewProvider
+// ============================================================
+import * as vscode from "vscode";
+import type {
+  PostWithComments,
+  FeedResponse,
+  CreatePostRequest,
+  CreateCommentRequest,
+  WebviewToExtensionMessage,
+  ExtensionToWebviewMessage,
+} from "@cp-share/shared";
+import { CommunityCodeProvider } from "./CommunityCodeProvider";
+
+const API_BASE = "https://api.cpshare.dsainvg.me";
+
+export class SidebarProvider implements vscode.WebviewViewProvider {
+  private _view?: vscode.WebviewView;
+  private readonly _authKey: string;
+  private readonly _codeProvider: CommunityCodeProvider;
+
+  constructor(
+    private readonly _extensionUri: vscode.Uri,
+    authKey: string,
+    codeProvider: CommunityCodeProvider
+  ) {
+    this._authKey = authKey;
+    this._codeProvider = codeProvider;
+  }
+
+  // ── VS Code calls this when the view becomes visible ─────────
+  resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ): void | Thenable<void> {
+    this._view = webviewView;
+
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this._extensionUri],
+    };
+
+    webviewView.webview.html = this._buildHtml(webviewView.webview);
+
+    // Listen for messages from the Webview
+    webviewView.webview.onDidReceiveMessage(
+      (msg: WebviewToExtensionMessage) => this._handleMessage(msg)
+    );
+
+    // Auto-load feed when view opens
+    this._fetchAndPostFeed();
+  }
+
+  /** Send a typed message from the extension to the webview. */
+  postMessage(msg: ExtensionToWebviewMessage): void {
+    this._view?.webview.postMessage(msg);
+  }
+
+  // ── Message handler ───────────────────────────────────────────
+  private async _handleMessage(msg: WebviewToExtensionMessage): Promise<void> {
+    switch (msg.type) {
+      case "REFRESH_FEED":
+        await this._fetchAndPostFeed();
+        break;
+
+      case "CREATE_POST":
+        await this._createPost(msg.payload);
+        break;
+
+      case "CREATE_COMMENT":
+        await this._createComment(msg.payload);
+        break;
+
+      case "ATTACH_FILE":
+        // Delegate to the registered command so it can access the active editor
+        vscode.commands.executeCommand("cp-share.attachFile");
+        break;
+
+      case "RUN_CODE":
+        vscode.commands.executeCommand("cp-share.runCodeLocally", msg.payload);
+        break;
+
+      case "OPEN_CODE_DOC":
+        vscode.commands.executeCommand("cp-share.openCodeDoc", msg.payload);
+        break;
+    }
+  }
+
+  // ── API helpers ───────────────────────────────────────────────
+  private _headers(): HeadersInit {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this._authKey}`,
+    };
+  }
+
+  private async _fetchAndPostFeed(): Promise<void> {
+    try {
+      const res = await fetch(`${API_BASE}/posts`, {
+        headers: this._headers(),
+      });
+      if (!res.ok) {
+        const data = await res.json() as { error?: string };
+        this.postMessage({ type: "ERROR", payload: { message: data.error ?? "Failed to load feed" } });
+        return;
+      }
+      const data = await res.json() as FeedResponse;
+      this.postMessage({ type: "FEED_DATA", payload: data });
+    } catch (e) {
+      this.postMessage({ type: "ERROR", payload: { message: String(e) } });
+    }
+  }
+
+  private async _createPost(body: CreatePostRequest): Promise<void> {
+    try {
+      const res = await fetch(`${API_BASE}/posts`, {
+        method: "POST",
+        headers: this._headers(),
+        body: JSON.stringify(body),
+      });
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        this.postMessage({ type: "ERROR", payload: { message: data.error ?? "Failed to create post" } });
+        return;
+      }
+      // Refresh the full feed to reflect the new post
+      await this._fetchAndPostFeed();
+    } catch (e) {
+      this.postMessage({ type: "ERROR", payload: { message: String(e) } });
+    }
+  }
+
+  private async _createComment(body: CreateCommentRequest): Promise<void> {
+    try {
+      const res = await fetch(`${API_BASE}/comments`, {
+        method: "POST",
+        headers: this._headers(),
+        body: JSON.stringify(body),
+      });
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        this.postMessage({ type: "ERROR", payload: { message: data.error ?? "Failed to post comment" } });
+        return;
+      }
+      await this._fetchAndPostFeed();
+    } catch (e) {
+      this.postMessage({ type: "ERROR", payload: { message: String(e) } });
+    }
+  }
+
+  // ── Webview HTML ──────────────────────────────────────────────
+  private _buildHtml(webview: vscode.Webview): string {
+    // CSP nonce for inline scripts (security best-practice)
+    const nonce = getNonce();
+
+    return /* html */ `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none';
+                 style-src 'unsafe-inline';
+                 script-src 'nonce-${nonce}';" />
+  <title>CP Share</title>
+  <style>
+    /* ── Reset & tokens ─────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: var(--vscode-editor-background);
+      --fg: var(--vscode-editor-foreground);
+      --accent: #7c3aed;
+      --accent-light: #a78bfa;
+      --surface: var(--vscode-editorWidget-background, #1e1e2e);
+      --border: var(--vscode-widget-border, #334155);
+      --muted: var(--vscode-descriptionForeground, #94a3b8);
+      --danger: #f87171;
+      --success: #34d399;
+      --radius: 6px;
+      --font: var(--vscode-font-family, system-ui, sans-serif);
+      --font-mono: var(--vscode-editor-font-family, 'Courier New', monospace);
+    }
+    body {
+      font-family: var(--font);
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
+      padding: 0 8px 12px;
+    }
+
+    /* ── Toolbar ─────────────────────────────────────────── */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 10px;
+    }
+    .toolbar h1 {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent-light);
+      flex: 1;
+      letter-spacing: .03em;
+    }
+    .icon-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 3px 5px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      transition: color .15s, background .15s;
+    }
+    .icon-btn:hover { color: var(--fg); background: var(--border); }
+
+    /* ── Error banner ────────────────────────────────────── */
+    #error-banner {
+      display: none;
+      background: #450a0a;
+      color: var(--danger);
+      padding: 6px 10px;
+      border-radius: var(--radius);
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    #error-banner.visible { display: block; }
+
+    /* ── Create post form ────────────────────────────────── */
+    .form-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+    .form-card details summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--accent-light);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+    }
+    .form-card details[open] summary { margin-bottom: 8px; }
+    .form-row { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+    input, textarea, select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--fg);
+      font-family: var(--font);
+      font-size: 12px;
+      padding: 5px 8px;
+      outline: none;
+      resize: vertical;
+      transition: border-color .15s;
+    }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+    textarea { min-height: 60px; }
+    .code-area { font-family: var(--font-mono); font-size: 11px; min-height: 80px; }
+
+    /* ── Attach strip ────────────────────────────────────── */
+    .attach-strip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #1e1b4b;
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      padding: 5px 8px;
+      font-size: 11px;
+    }
+    .attach-strip span { flex: 1; color: var(--accent-light); font-style: italic; }
+    .attach-strip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+
+    /* ── Buttons ─────────────────────────────────────────── */
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 5px 12px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background .15s, transform .08s;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn:hover { background: #6d28d9; }
+    .btn:active { transform: scale(.97); }
+    .btn-sm { padding: 3px 8px; font-size: 11px; }
+    .btn-ghost {
+      background: none;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: var(--border); color: var(--fg); }
+
+    /* ── Feed ────────────────────────────────────────────── */
+    #feed { display: flex; flex-direction: column; gap: 10px; }
+    .post-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      animation: fadeIn .2s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+    .post-header {
+      padding: 8px 10px 6px;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .post-meta { flex: 1; }
+    .post-title {
+      font-weight: 700;
+      font-size: 12.5px;
+      color: var(--fg);
+      margin-bottom: 1px;
+    }
+    .post-info { font-size: 10.5px; color: var(--muted); }
+    .post-body { padding: 0 10px 6px; font-size: 12px; line-height: 1.6; }
+    .code-block {
+      margin: 6px 10px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .code-block-header {
+      display: flex;
+      align-items: center;
+      padding: 3px 8px;
+      background: #161b22;
+      gap: 6px;
+    }
+    .lang-badge {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: #79c0ff;
+      font-weight: 600;
+    }
+    .code-actions { margin-left: auto; display: flex; gap: 4px; }
+    .code-btn {
+      background: none;
+      border: 1px solid #30363d;
+      color: #8b949e;
+      border-radius: 3px;
+      font-size: 10px;
+      padding: 1px 6px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .code-btn:hover { background: #21262d; color: #e6edf3; }
+    pre {
+      padding: 8px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.6;
+      color: #e6edf3;
+      margin: 0;
+      white-space: pre;
+    }
+
+    /* ── Comments ────────────────────────────────────────── */
+    .comments-section { border-top: 1px solid var(--border); }
+    .comment {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11.5px;
+    }
+    .comment:last-child { border-bottom: none; }
+    .comment-meta { color: var(--muted); font-size: 10.5px; margin-bottom: 2px; }
+    .comment-body { line-height: 1.5; }
+
+    /* ── Comment form ────────────────────────────────────── */
+    .comment-form {
+      padding: 6px 10px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      border-top: 1px solid var(--border);
+    }
+    .comment-form textarea { min-height: 45px; }
+
+    /* ── Loading ─────────────────────────────────────────── */
+    .loading {
+      text-align: center;
+      color: var(--muted);
+      padding: 24px;
+      font-size: 12px;
+    }
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty-state {
+      text-align: center;
+      color: var(--muted);
+      padding: 32px 16px;
+      font-size: 12px;
+    }
+    .empty-state .emoji { font-size: 28px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Toolbar ──────────────────────────────────────────────── -->
+<div class="toolbar">
+  <h1>⬡ CP Share</h1>
+  <button class="icon-btn" id="btn-attach" title="Attach current file">📎</button>
+  <button class="icon-btn" id="btn-refresh" title="Refresh feed">↻</button>
+</div>
+
+<!-- ── Error banner ─────────────────────────────────────────── -->
+<div id="error-banner" role="alert"></div>
+
+<!-- ── Create Post form ─────────────────────────────────────── -->
+<div class="form-card">
+  <details id="new-post-details">
+    <summary>＋ New Post</summary>
+    <div class="form-row">
+      <input type="text" id="post-title" placeholder="Title…" />
+      <textarea id="post-body" placeholder="What are you sharing?"></textarea>
+      <div id="post-attach-strip" style="display:none" class="attach-strip">
+        <span id="post-attach-label">File attached</span>
+        <button id="post-attach-clear" title="Remove attachment">✕</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="post-lang" style="flex:1">
+          <option value="">No code attachment</option>
+          ${langOptions()}
+        </select>
+        <button class="btn btn-sm btn-ghost" id="btn-post-attach">📎 File</button>
+      </div>
+      <textarea id="post-code" class="code-area" placeholder="Code (optional)…" style="display:none"></textarea>
+      <button class="btn btn-sm" id="btn-submit-post">Publish</button>
+    </div>
+  </details>
+</div>
+
+<!-- ── Feed ─────────────────────────────────────────────────── -->
+<div id="feed">
+  <div class="loading"><span class="spinner"></span>Loading feed…</div>
+</div>
+
+<script nonce="${nonce}">
+  // ── VS Code API ─────────────────────────────────────────────
+  const vscode = acquireVsCodeApi();
+  function postMsg(msg) { vscode.postMessage(msg); }
+
+  // ── State ───────────────────────────────────────────────────
+  let attachedCode = null;
+  let attachedLang = null;
+
+  // ── Toolbar ─────────────────────────────────────────────────
+  document.getElementById('btn-refresh').addEventListener('click', () => {
+    postMsg({ type: 'REFRESH_FEED' });
+  });
+  document.getElementById('btn-attach').addEventListener('click', () => {
+    postMsg({ type: 'ATTACH_FILE' });
+  });
+
+  // ── Post form ───────────────────────────────────────────────
+  const postLang = document.getElementById('post-lang');
+  const postCode = document.getElementById('post-code');
+  postLang.addEventListener('change', () => {
+    postCode.style.display = postLang.value ? 'block' : 'none';
+  });
+
+  document.getElementById('btn-post-attach').addEventListener('click', () => {
+    postMsg({ type: 'ATTACH_FILE' });
+  });
+
+  document.getElementById('post-attach-clear').addEventListener('click', () => {
+    attachedCode = null;
+    attachedLang = null;
+    document.getElementById('post-attach-strip').style.display = 'none';
+    postCode.value = '';
+    postLang.value = '';
+    postCode.style.display = 'none';
+  });
+
+  document.getElementById('btn-submit-post').addEventListener('click', () => {
+    const title = document.getElementById('post-title').value.trim();
+    const body  = document.getElementById('post-body').value.trim();
+    if (!title || !body) { showError('Title and body are required.'); return; }
+
+    const code = attachedCode ?? (postCode.value.trim() || undefined);
+    const lang = attachedLang ?? (postLang.value || undefined);
+
+    postMsg({ type: 'CREATE_POST', payload: { title, body, code_content: code, language: lang } });
+    document.getElementById('post-title').value = '';
+    document.getElementById('post-body').value = '';
+    postCode.value = '';
+    postLang.value = '';
+    postCode.style.display = 'none';
+    attachedCode = null; attachedLang = null;
+    document.getElementById('post-attach-strip').style.display = 'none';
+    document.getElementById('new-post-details').removeAttribute('open');
+  });
+
+  // ── Feed rendering ───────────────────────────────────────────
+  function renderFeed(posts) {
+    const feed = document.getElementById('feed');
+    if (!posts.length) {
+      feed.innerHTML = '<div class="empty-state"><div class="emoji">📭</div>No posts yet. Be the first!</div>';
+      return;
+    }
+    feed.innerHTML = posts.map(renderPost).join('');
+    attachCommentHandlers(posts);
+  }
+
+  function escape(str) {
+    return String(str ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function renderCode(id, code, lang, prefix) {
+    if (!code) return '';
+    const idStr = prefix + '-' + id;
+    return \`
+    <div class="code-block">
+      <div class="code-block-header">
+        <span class="lang-badge">\${escape(lang || 'text')}</span>
+        <div class="code-actions">
+          <button class="code-btn" onclick="openDoc('\${idStr}', \${JSON.stringify(code)}, '\${escape(lang || '')}')">Open</button>
+          <button class="code-btn" onclick="runCode(\${JSON.stringify(code)}, '\${escape(lang || '')}')">▶ Run</button>
+        </div>
+      </div>
+      <pre>\${escape(code)}</pre>
+    </div>\`;
+  }
+
+  function renderPost(post) {
+    const comments = (post.comments || []).map(c => \`
+      <div class="comment">
+        <div class="comment-meta">User #\${c.user_id} · \${formatDate(c.created_at)}</div>
+        <div class="comment-body">\${escape(c.body)}</div>
+        \${renderCode(c.id, c.code_content, c.language, 'comment')}
+      </div>
+    \`).join('');
+
+    return \`
+    <div class="post-card" data-post-id="\${post.id}">
+      <div class="post-header">
+        <div class="post-meta">
+          <div class="post-title">\${escape(post.title)}</div>
+          <div class="post-info">User #\${post.user_id} · \${formatDate(post.created_at)}</div>
+        </div>
+      </div>
+      <div class="post-body">\${escape(post.body)}</div>
+      \${renderCode(post.id, post.code_content, post.language, 'post')}
+      <div class="comments-section">
+        \${comments}
+        <div class="comment-form">
+          <textarea class="comment-textarea" data-post-id="\${post.id}"
+                    placeholder="Write a comment…"></textarea>
+          <div class="attach-strip comment-attach-strip" data-post-id="\${post.id}" style="display:none">
+            <span class="comment-attach-label">File attached</span>
+            <button class="comment-attach-clear" data-post-id="\${post.id}">✕</button>
+          </div>
+          <div style="display:flex;gap:5px">
+            <select class="comment-lang" data-post-id="\${post.id}" style="flex:1">
+              <option value="">No code</option>
+              \${langOptionsHTML()}
+            </select>
+            <button class="btn btn-sm btn-ghost comment-attach-btn" data-post-id="\${post.id}">📎</button>
+            <button class="btn btn-sm comment-submit-btn" data-post-id="\${post.id}">Reply</button>
+          </div>
+          <textarea class="comment-code-area code-area" data-post-id="\${post.id}"
+                    placeholder="Code (optional)…" style="display:none"></textarea>
+        </div>
+      </div>
+    </div>\`;
+  }
+
+  function attachCommentHandlers(posts) {
+    // Language select → show code area
+    document.querySelectorAll('.comment-lang').forEach(sel => {
+      sel.addEventListener('change', e => {
+        const pid = e.target.dataset.postId;
+        const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+        if (codeArea) codeArea.style.display = sel.value ? 'block' : 'none';
+      });
+    });
+
+    // Attach file for comment
+    document.querySelectorAll('.comment-attach-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _pendingAttachTarget = { type: 'comment', postId: btn.dataset.postId };
+        postMsg({ type: 'ATTACH_FILE' });
+      });
+    });
+
+    // Clear comment attachment
+    document.querySelectorAll('.comment-attach-clear').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid = btn.dataset.postId;
+        delete _commentAttachments[pid];
+        const strip = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"]\`);
+        if (strip) strip.style.display = 'none';
+        const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+        if (codeArea) { codeArea.value = ''; codeArea.style.display = 'none'; }
+        const lang = document.querySelector(\`.comment-lang[data-post-id="\${pid}"]\`);
+        if (lang) lang.value = '';
+      });
+    });
+
+    // Submit comment
+    document.querySelectorAll('.comment-submit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid = Number(btn.dataset.postId);
+        const textarea = document.querySelector(\`.comment-textarea[data-post-id="\${pid}"]\`);
+        const langSel  = document.querySelector(\`.comment-lang[data-post-id="\${pid}"]\`);
+        const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+        const body = textarea?.value.trim();
+        if (!body) return;
+
+        const attachment = _commentAttachments[String(pid)];
+        const code = attachment?.code ?? (codeArea?.value.trim() || undefined);
+        const lang = attachment?.language ?? (langSel?.value || undefined);
+
+        postMsg({
+          type: 'CREATE_COMMENT',
+          payload: { post_id: pid, body, code_content: code, language: lang }
+        });
+        if (textarea) textarea.value = '';
+        if (codeArea) { codeArea.value = ''; codeArea.style.display = 'none'; }
+        if (langSel) langSel.value = '';
+        delete _commentAttachments[String(pid)];
+        const strip = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"]\`);
+        if (strip) strip.style.display = 'none';
+      });
+    });
+  }
+
+  // ── Attachment tracking ──────────────────────────────────────
+  let _pendingAttachTarget = null; // { type: 'post' } | { type: 'comment', postId: string }
+  const _commentAttachments = {};  // postId → { code, language }
+
+  // ── Code actions (called from inline onclick) ────────────────
+  function openDoc(id, code, language) {
+    postMsg({ type: 'OPEN_CODE_DOC', payload: { id, code, language } });
+  }
+  function runCode(code, language) {
+    postMsg({ type: 'RUN_CODE', payload: { code, language } });
+  }
+
+  // ── Utilities ────────────────────────────────────────────────
+  function formatDate(iso) {
+    try { return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }); }
+    catch { return iso; }
+  }
+  function showError(msg) {
+    const el = document.getElementById('error-banner');
+    el.textContent = msg;
+    el.classList.add('visible');
+    setTimeout(() => el.classList.remove('visible'), 4000);
+  }
+  function langOptionsHTML() {
+    return ['python','cpp','javascript','typescript','c','rust','go','java','ruby','shell','bash']
+      .map(l => \`<option value="\${l}">\${l}</option>\`).join('');
+  }
+
+  // ── Extension → Webview messages ────────────────────────────
+  window.addEventListener('message', event => {
+    const msg = event.data;
+    switch (msg.type) {
+      case 'FEED_DATA':
+        renderFeed(msg.payload.posts);
+        break;
+      case 'FILE_ATTACHED': {
+        const { code, language } = msg.payload;
+        if (_pendingAttachTarget?.type === 'comment') {
+          const pid = _pendingAttachTarget.postId;
+          _commentAttachments[pid] = { code, language };
+          const strip = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"]\`);
+          if (strip) { strip.style.display = 'flex'; }
+          const label = document.querySelector(\`.comment-attach-strip[data-post-id="\${pid}"] .comment-attach-label\`);
+          if (label) label.textContent = \`\${language} file attached\`;
+          const codeArea = document.querySelector(\`.comment-code-area[data-post-id="\${pid}"]\`);
+          if (codeArea) { codeArea.value = code; codeArea.style.display = 'block'; }
+          const langSel = document.querySelector(\`.comment-lang[data-post-id="\${pid}"]\`);
+          if (langSel) langSel.value = language;
+        } else {
+          // Attach to new post form
+          attachedCode = code;
+          attachedLang = language;
+          const strip = document.getElementById('post-attach-strip');
+          strip.style.display = 'flex';
+          document.getElementById('post-attach-label').textContent = \`\${language} file attached\`;
+          postCode.value = code;
+          postCode.style.display = 'block';
+          postLang.value = language;
+        }
+        _pendingAttachTarget = null;
+        break;
+      }
+      case 'ERROR':
+        showError(msg.payload.message);
+        break;
+    }
+  });
+</script>
+</body>
+</html>`;
+  }
+}
+
+function getNonce(): string {
+  let text = "";
+  const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  for (let i = 0; i < 32; i++) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  }
+  return text;
+}
+
+function langOptions(): string {
+  return ["python", "cpp", "javascript", "typescript", "c", "rust", "go", "java", "ruby", "shell", "bash"]
+    .map((l) => `<option value="${l}">${l}</option>`)
+    .join("\n          ");
+}

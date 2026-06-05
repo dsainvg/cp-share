@@ -1,0 +1,19 @@
+{
+  "name": "@cp-share/backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 execute cpques_db --file=schema.sql"
+  },
+  "dependencies": {
+    "hono": "^4.4.7",
+    "@cp-share/shared": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240725.0",
+    "typescript": "^5.4.5",
+    "wrangler": "^3.65.1"
+  }
+}

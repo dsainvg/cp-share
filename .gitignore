@@ -1,0 +1,27 @@
+# node_modules everywhere
+node_modules/
+**/node_modules/
+
+# Build outputs
+out/
+dist/
+*.js.map
+
+# Wrangler
+.wrangler/
+
+# Environment / secrets
+.dev.vars
+*.env
+.env.*
+
+# VS Code test output
+.vscode-test/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# NPM logs
+npm-debug.log*
+package-lock.json
