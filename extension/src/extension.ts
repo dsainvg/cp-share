@@ -47,7 +47,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     communityCodeProvider
   );
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider("cp-share.sidebarView", sidebarProvider)
+    vscode.window.registerWebviewViewProvider("cp-share.sidebarView", sidebarProvider, {
+      webviewOptions: {
+        retainContextWhenHidden: true,
+      },
+    })
   );
 
   // ── 5. Approval polling — checks every 30s while pending ────

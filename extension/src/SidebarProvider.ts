@@ -750,8 +750,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         '<span class="lang-badge">' + escape(lang || 'text') + '</span>' +
         '<div class="code-actions">' +
           testBtn +
-          '<button class="code-btn" onclick="openDoc(\'' + idStr + '\', ' + JSON.stringify(code) + ', \'' + escape(lang || '') + '\')">Open</button>' +
-          '<button class="code-btn" onclick="runCode(' + JSON.stringify(code) + ', \'' + escape(lang || '') + '\')">▶ Run</button>' +
+          '<button class="code-btn open-code-btn" data-type="' + prefix + '" data-id="' + id + '">Open</button>' +
+          '<button class="code-btn run-code-btn" data-type="' + prefix + '" data-id="' + id + '">▶ Run</button>' +
         '</div>' +
       '</div>' +
       '<pre>' + escape(code) + '</pre>' +
@@ -809,6 +809,44 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   function attachCommentHandlers(posts) {
+    document.querySelectorAll('.open-code-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const type = btn.dataset.type;
+        const id = Number(btn.dataset.id);
+        let code = '';
+        let lang = '';
+        if (type === 'post') {
+          const post = _currentPosts.find(p => p.id === id);
+          if (post) { code = post.code_content || ''; lang = post.language || ''; }
+        } else {
+          for (const post of _currentPosts) {
+            const comment = (post.comments || []).find(c => c.id === id);
+            if (comment) { code = comment.code_content || ''; lang = comment.language || ''; break; }
+          }
+        }
+        openDoc(type + '-' + id, code, lang);
+      });
+    });
+
+    document.querySelectorAll('.run-code-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const type = btn.dataset.type;
+        const id = Number(btn.dataset.id);
+        let code = '';
+        let lang = '';
+        if (type === 'post') {
+          const post = _currentPosts.find(p => p.id === id);
+          if (post) { code = post.code_content || ''; lang = post.language || ''; }
+        } else {
+          for (const post of _currentPosts) {
+            const comment = (post.comments || []).find(c => c.id === id);
+            if (comment) { code = comment.code_content || ''; lang = comment.language || ''; break; }
+          }
+        }
+        runCode(code, lang);
+      });
+    });
+
     document.querySelectorAll('.delete-post-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const pid = Number(btn.dataset.postId);

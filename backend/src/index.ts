@@ -88,7 +88,7 @@ app.get("/posts", async (c) => {
   const user = c.get("user");
   const feed: PostWithComments[] = posts.map((p) => ({ 
     ...p, 
-    is_owner: p.user_id === user.id || user.role === "admin",
+    is_owner: Number(p.user_id) === Number(user.id) || user.role === "admin",
     comments: commentsByPost.get(p.id) ?? [] 
   }));
   return ok<FeedResponse>({ posts: feed });
@@ -134,10 +134,12 @@ app.delete("/posts/:id", async (c) => {
   const post = await c.env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first<Post>();
   if (!post) return err("Post not found", 404);
   
-  if (post.user_id !== user.id && user.role !== "admin") {
+  if (Number(post.user_id) !== Number(user.id) && user.role !== "admin") {
     return err("Unauthorized to delete this post", 403);
   }
   
+  // Explicitly delete comments first to ensure database-agnostic cascading cleanup
+  await c.env.DB.prepare("DELETE FROM comments WHERE post_id = ?").bind(id).run();
   await c.env.DB.prepare("DELETE FROM posts WHERE id = ?").bind(id).run();
   return ok({ ok: true, message: "Post deleted" });
 });
