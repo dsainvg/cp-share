@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 # ── Custom domain ─────────────────────────────────────────────
 # Set this up in: Workers & Pages → your worker → Settings → Domains & Routes
 routes = [
-  { pattern = "api.cpshare.dsainvg.me/*", custom_domain = true }
+  { pattern = "api.cpshare.dsainvg.me", custom_domain = true }
 ]
 
 # ── D1 Database ───────────────────────────────────────────────

@@ -3,8 +3,6 @@
 -- Run: wrangler d1 execute cp-share-db --file=schema.sql
 -- ============================================================
 
-PRAGMA journal_mode = WAL;
-
 -- ── Users ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
   id         INTEGER  PRIMARY KEY AUTOINCREMENT,
