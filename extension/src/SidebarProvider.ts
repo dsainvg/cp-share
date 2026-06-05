@@ -101,6 +101,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         await this._deletePost(msg.payload.post_id);
         break;
 
+      case "OPEN_LINK":
+        vscode.env.openExternal(vscode.Uri.parse(msg.payload.url));
+        break;
+
       case "TEST_CODE": {
         const result = await vscode.commands.executeCommand("cp-share.testCode", msg.payload);
         this.postMessage({ type: "TEST_RESULT", payload: result as any });
@@ -768,12 +772,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       '</div>'
     ).join('');
 
-    const deleteBtn = post.is_owner 
-      ? '<button class="icon-btn delete-post-btn" data-post-id="' + post.id + '" title="Delete Post" style="color:var(--danger)">🗑️</button>'
-      : '';
+    const deleteBtn = '';
 
     const linkHtml = post.link 
-      ? '<a href="' + escape(post.link) + '" target="_blank" style="color:var(--accent-light);text-decoration:none;margin-left:6px">🔗 Link</a>'
+      ? '<a href="#" class="post-link-href" data-url="' + escape(post.link) + '" style="color:var(--accent-light);text-decoration:none;margin-left:6px">🔗 Link</a>'
       : '';
 
     return '<div class="post-card" data-post-id="' + post.id + '">' +
@@ -809,6 +811,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   function attachCommentHandlers(posts) {
+    document.querySelectorAll('.post-link-href').forEach(link => {
+      link.addEventListener('click', e => {
+        e.preventDefault();
+        const url = link.dataset.url;
+        if (url) {
+          postMsg({ type: 'OPEN_LINK', payload: { url } });
+        }
+      });
+    });
+
     document.querySelectorAll('.open-code-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const type = btn.dataset.type;
@@ -847,14 +859,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       });
     });
 
-    document.querySelectorAll('.delete-post-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const pid = Number(btn.dataset.postId);
-        if (confirm('Are you sure you want to delete this post and all its comments?')) {
-          postMsg({ type: 'DELETE_POST', payload: { post_id: pid } });
-        }
-      });
-    });
 
     document.querySelectorAll('.test-btn').forEach(btn => {
       btn.addEventListener('click', () => {

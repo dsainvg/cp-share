@@ -1,6 +1,6 @@
 {
   "name": "cp-share",
-  "version": "1.1.1",
+  "version": "1.4.3",
   "private": true,
   "displayName": "CP Share",
   "description": "Community code-sharing sidebar for VS Code",
@@ -44,7 +44,8 @@
         {
           "type": "webview",
           "id": "cp-share.sidebarView",
-          "name": "Community Feed"
+          "name": "Community Feed",
+          "icon": "media/icon.png"
         }
       ]
     }

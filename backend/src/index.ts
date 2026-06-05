@@ -129,19 +129,36 @@ app.post("/posts", async (c) => {
 app.delete("/posts/:id", async (c) => {
   const user = c.get("user");
   const id = Number(c.req.param("id"));
+  console.log(`[DELETE /posts/:id] Attempting delete for post id: ${id}`);
+  console.log(`[DELETE /posts/:id] Auth user: id=${user.id}, username=${user.username}, role=${user.role}`);
+  
   if (Number.isNaN(id)) return err("Invalid id");
   
   const post = await c.env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first<Post>();
-  if (!post) return err("Post not found", 404);
+  if (!post) {
+    console.log(`[DELETE /posts/:id] Post not found for id: ${id}`);
+    return err("Post not found", 404);
+  }
+  
+  console.log(`[DELETE /posts/:id] Post found: id=${post.id}, user_id=${post.user_id}`);
+  console.log(`[DELETE /posts/:id] Comparing post.user_id (${post.user_id}) and user.id (${user.id})`);
   
   if (Number(post.user_id) !== Number(user.id) && user.role !== "admin") {
+    console.log(`[DELETE /posts/:id] Unauthorized. User is not owner and not admin.`);
     return err("Unauthorized to delete this post", 403);
   }
   
-  // Explicitly delete comments first to ensure database-agnostic cascading cleanup
-  await c.env.DB.prepare("DELETE FROM comments WHERE post_id = ?").bind(id).run();
-  await c.env.DB.prepare("DELETE FROM posts WHERE id = ?").bind(id).run();
-  return ok({ ok: true, message: "Post deleted" });
+  try {
+    console.log(`[DELETE /posts/:id] Deleting comments for post id: ${id}`);
+    await c.env.DB.prepare("DELETE FROM comments WHERE post_id = ?").bind(id).run();
+    console.log(`[DELETE /posts/:id] Deleting post id: ${id}`);
+    await c.env.DB.prepare("DELETE FROM posts WHERE id = ?").bind(id).run();
+    console.log(`[DELETE /posts/:id] Successfully deleted post and comments`);
+    return ok({ ok: true, message: "Post deleted" });
+  } catch (e) {
+    console.error(`[DELETE /posts/:id] Database execution error: ${String(e)}`);
+    return err(`Database error: ${String(e)}`, 500);
+  }
 });
 
 // ── POST /comments ────────────────────────────────────────────

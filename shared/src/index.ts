@@ -102,6 +102,7 @@ export type WebviewToExtensionMessage =
   | { type: "REFRESH_FEED" }
   | { type: "TRIGGER_REGISTER" }
   | { type: "DELETE_POST"; payload: { post_id: number } }
+  | { type: "OPEN_LINK"; payload: { url: string } }
   | { type: "TEST_CODE"; payload: { code: string; language: string; expected_input: string | null; expected_output: string | null; problem_type: "leetcode" | "atcoder-cf" | "other" } };
 
 export type ExtensionToWebviewMessage =
