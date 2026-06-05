@@ -1,10 +1,16 @@
 {
   "name": "cp-share",
-  "version": "1.4.3",
-  "private": true,
+  "version": "1.4.5",
   "displayName": "CP Share",
+  "author": "Gundubogula Nageswara Venkata Durga Sai",
   "description": "Community code-sharing sidebar for VS Code",
   "publisher": "dsainvg",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dsainvg/cp-share.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -35,7 +41,7 @@
         {
           "id": "cp-share-sidebar",
           "title": "CP Share",
-          "icon": "media/icon.svg"
+          "icon": "media/icon.png"
         }
       ]
     },
