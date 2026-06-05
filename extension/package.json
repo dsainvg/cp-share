@@ -1,6 +1,6 @@
 {
   "name": "cp-share",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "displayName": "CP Share",
   "author": "Gundubogula Nageswara Venkata Durga Sai",
   "description": "Community code-sharing sidebar for VS Code",
@@ -41,7 +41,7 @@
         {
           "id": "cp-share-sidebar",
           "title": "CP Share",
-          "icon": "media/icon.png"
+          "icon": "media/icon.svg"
         }
       ]
     },
