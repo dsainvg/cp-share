@@ -1,5 +1,0 @@
-# deploy.yml is NOT needed when using Cloudflare's native Git integration.
-# Cloudflare handles deployment automatically on every push to main.
-#
-# This file is kept as a reference only.
-# To re-enable GitHub Actions deployment, restore the original content.
